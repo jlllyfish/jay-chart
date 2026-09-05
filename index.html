@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jay Chart 🐦</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%A6%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.13.1/dist/dsfr.min.css">
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Marianne",arial,sans-serif; background:#fff; color:#161616; padding:20px 24px 40px; }
+  h1 { font-size:1.15rem; margin:0 0 4px; }
+  .sub { font-size:.85rem; color:#3A3A3A; margin:0 0 20px; }
+  table.pivot { border-collapse:collapse; width:100%; margin-bottom:32px; font-size:.85rem; }
+  table.pivot th, table.pivot td { border:1px solid #DDD; padding:7px 10px; text-align:center; }
+  table.pivot thead th { background:#F6F6F6; font-weight:700; }
+  table.pivot td.cat { text-align:left; font-weight:700; background:#F6F6F6; }
+  table.pivot tr.tot td { font-weight:700; color:#000091; border-top:2px solid #000091; }
+
+  .charts { display:grid; grid-template-columns:repeat(2, 1fr); gap:24px; }
+  .chartbox { border:1px solid #E5E5E5; padding:16px; }
+  .chartbox h2 { font-size:.95rem; margin:0 0 12px; text-align:center; }
+  .chartbox canvas { max-height:300px; }
+
+  @media (max-width:600px) {
+    .charts { grid-template-columns: 1fr; }
+  }
+
+  .title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .cfg-btn { background:none !important; border:1px solid #DDD; border-radius:4px; width:30px; height:30px; cursor:pointer; color:#000091; font-size:1rem; flex-shrink:0; opacity:1 !important; }
+  .cfg-btn:hover { background:#F6F6F6 !important; opacity:1 !important; }
+
+  .config-overlay { position:fixed; inset:0; background:rgba(0,0,0,.25); display:none; justify-content:flex-end; z-index:1000; }
+  .config-panel { background:#fff; width:280px; max-width:90vw; height:100%; padding:20px; box-shadow:-2px 0 8px rgba(0,0,0,.15); overflow-y:auto; }
+  .config-header { display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:1rem; margin-bottom:16px; }
+  .config-close { background:none; border:none; font-size:1.3rem; cursor:pointer; color:#3A3A3A; line-height:1; }
+  .cfg-label { display:block; font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:#000091; font-weight:700; margin:14px 0 6px; }
+  .cfg-input { width:100%; border:1px solid #CCC; border-radius:4px; padding:8px 10px; font-size:.9rem; font-family:inherit; box-sizing:border-box; }
+  .cfg-save { width:100%; margin-top:22px; background:#000091 !important; color:#fff !important; border:none; border-radius:4px; padding:10px; font-size:.9rem; font-weight:700; cursor:pointer; opacity:1 !important; }
+  .cfg-save:hover { background:#1212FF !important; opacity:1 !important; }
+</style>
+</head>
+<body>
+
+<div class="title-row">
+  <h1 id="pageTitle">Suivi des dossiers</h1>
+  <button id="cfgOpenBtn" class="cfg-btn" type="button" title="Configuration">⚙</button>
+</div>
+<p class="sub" id="pageSub">Chargement…</p>
+
+<div id="tableZone"></div>
+<div class="charts">
+  <div class="chartbox"><h2 id="chartNbTitle">Nombre de dossiers</h2><canvas id="chartNb"></canvas></div>
+  <div class="chartbox" id="chartMontantBox"><h2 id="chartMontantTitle">Montants (€)</h2><canvas id="chartMontant"></canvas></div>
+  <div class="chartbox" id="chartAvisBox"><h2 id="chartAvisTitle">Autre catégorie</h2><canvas id="chartAvis"></canvas></div>
+</div>
+
+<div id="configOverlay" class="config-overlay">
+  <div class="config-panel">
+    <div class="config-header"><span>Configuration</span><button id="cfgClose" class="config-close" type="button">&times;</button></div>
+    <label class="cfg-label">Titre du widget</label>
+    <input id="cfgWidgetTitle" class="cfg-input" type="text">
+    <label class="cfg-label">Titre colonne « Catégorie »</label>
+    <input id="cfgCategorieTitle" class="cfg-input" type="text">
+    <label class="cfg-label">Titre colonne « Montant »</label>
+    <input id="cfgMontantTitle" class="cfg-input" type="text">
+    <label class="cfg-label">Titre colonne « Montant 2 »</label>
+    <input id="cfgMontant2Title" class="cfg-input" type="text">
+    <label class="cfg-label">Titre colonne « Autre catégorie »</label>
+    <input id="cfgAvisTitle" class="cfg-input" type="text">
+    <button id="cfgSave" class="cfg-save" type="button">Enregistrer</button>
+  </div>
+</div>
+
+<script>
+// Ordre des catégories (les valeurs non listées sont ajoutées à la suite, celles absentes des données sont ignorées)
+const CONFIG = { CATEGORIES_ORDER: ["SP", "EA", "PP", "MSC"] };
+const NO_CATEGORY_KEY = "__ALL__"; // utilisé quand la colonne Catégorie n'est pas mappée / vide
+
+// ==== Colonnes optionnelles : un seul endroit à modifier pour renommer/réutiliser ce widget ailleurs ====
+// "name" = clé technique (utilisée dans le code), "title" = libellé affiché partout (panneau Grist, tableau, graphique)
+const OPTIONAL_COLUMNS = {
+  categorie: { name: "Categorie", title: "Catégorie",  type: "Text,Choice" },
+  montant:   { name: "Montant",   title: "Montant",    type: "Numeric,Int" },
+  montant2:  { name: "Montant2",  title: "Montant 2",  type: "Numeric,Int" }, // ex. budget demandé (Montant) vs budget alloué (Montant2)
+  avis:      { name: "Avis",      title: "Autre catégorie", type: "Text,Choice" }        // donut : répartition d'une catégorie libre (ex. types d'avis rendus)
+};
+
+// ==== Couleur et ordre par statut (le libellé affiché, lui, est toujours votre texte brut tel quel) ====
+// La clé n'a pas besoin de correspondre exactement : majuscules/accents/espaces sont ignorés à la comparaison.
+// Un statut absent d'ici s'affiche quand même, avec une couleur de secours, donc rien ne casse si vous en oubliez un.
+function normAccent(s) { return String(s).normalize("NFC").trim(); } // pour l'affichage : garde la casse d'origine, corrige juste les accents "décomposés"
+function normStatut(s) { // pour la comparaison uniquement : insensible à la casse, aux accents, et espace ≈ underscore
+  return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[_\s]+/g, " ").trim().toLowerCase();
+}
+const STATUT_STYLE_SRC = {
+  "accepte":            { color: "#18753C", order: 3 },
+  "en_instruction":     { color: "#000091", order: 2 },
+  "en_construction":    { color: "#929292", order: 1 },
+  "classe_sans_suite":  { color: "#A55800", order: 4 },
+  "refuse":             { color: "#CE0500", order: 5 }
+};
+const STATUT_STYLE = {};
+Object.keys(STATUT_STYLE_SRC).forEach(k => { STATUT_STYLE[normStatut(k)] = STATUT_STYLE_SRC[k]; });
+const FALLBACK_PALETTE = ["#000091", "#18753C", "#929292", "#B34000", "#6E445A", "#009099"];
+const fallbackColorCache = {};
+
+function statutLabel(raw) { return normAccent(raw); }
+function statutColor(raw) {
+  const key = normStatut(raw);
+  if (STATUT_STYLE[key]) return STATUT_STYLE[key].color;
+  if (!fallbackColorCache[key]) fallbackColorCache[key] = FALLBACK_PALETTE[Object.keys(fallbackColorCache).length % FALLBACK_PALETTE.length];
+  return fallbackColorCache[key];
+}
+function statutOrder(raw) {
+  const key = normStatut(raw);
+  return STATUT_STYLE[key] ? STATUT_STYLE[key].order : 999;
+}
+function lightenColor(hex, amount) { // pour la 2e valeur numérique : même teinte, plus claire
+  const n = parseInt(hex.replace("#", ""), 16);
+  const r = Math.round(((n >> 16) & 255) + (255 - ((n >> 16) & 255)) * amount);
+  const g = Math.round(((n >> 8) & 255) + (255 - ((n >> 8) & 255)) * amount);
+  const b = Math.round((n & 255) + (255 - (n & 255)) * amount);
+  return `rgb(${r},${g},${b})`;
+}
+
+// Palette pour le donut "Avis" (couleurs assignées dans l'ordre de première rencontre) — palette Flattastic (Erigon)
+const AVIS_PALETTE = ["#DA4453", "#E9573F", "#FCBB42", "#8CC152", "#37BC9B", "#3BAFDA", "#4A89DC", "#967ADC"];
+const avisColorCache = {};
+function avisColor(raw) {
+  if (!avisColorCache[raw]) avisColorCache[raw] = AVIS_PALETTE[Object.keys(avisColorCache).length % AVIS_PALETTE.length];
+  return avisColorCache[raw];
+}
+
+// ==== Titres personnalisables (bouton ⚙ du widget) ====
+const DEFAULT_TITLES = {
+  widgetTitle: "Suivi des dossiers",
+  categorieTitle: OPTIONAL_COLUMNS.categorie.title,
+  montantTitle: OPTIONAL_COLUMNS.montant.title,
+  montant2Title: OPTIONAL_COLUMNS.montant2.title,
+  avisTitle: OPTIONAL_COLUMNS.avis.title
+};
+let TITLES = { ...DEFAULT_TITLES };
+let lastPivot = null, lastHasMontant = false, lastHasMontant2 = false, lastAvisCounts = null;
+
+function applyTitles() {
+  document.getElementById("pageTitle").textContent = TITLES.widgetTitle;
+  OPTIONAL_COLUMNS.categorie.title = TITLES.categorieTitle;
+  OPTIONAL_COLUMNS.montant.title = TITLES.montantTitle;
+  OPTIONAL_COLUMNS.montant2.title = TITLES.montant2Title;
+  OPTIONAL_COLUMNS.avis.title = TITLES.avisTitle;
+  if (lastPivot) render(lastPivot, lastHasMontant, lastHasMontant2);
+  document.getElementById("chartAvisTitle").textContent = OPTIONAL_COLUMNS.avis.title;
+  if (lastAvisCounts) renderAvis(true, lastAvisCounts);
+}
+
+function openConfigPanel() {
+  document.getElementById("cfgWidgetTitle").value = TITLES.widgetTitle;
+  document.getElementById("cfgCategorieTitle").value = TITLES.categorieTitle;
+  document.getElementById("cfgMontantTitle").value = TITLES.montantTitle;
+  document.getElementById("cfgMontant2Title").value = TITLES.montant2Title;
+  document.getElementById("cfgAvisTitle").value = TITLES.avisTitle;
+  document.getElementById("configOverlay").style.display = "flex";
+}
+function closeConfigPanel() { document.getElementById("configOverlay").style.display = "none"; }
+function saveConfig() {
+  // setOption (singulier) modifie une seule clé sans toucher aux autres options déjà stockées ;
+  // contrairement à setOptions (pluriel) qui remplace tout l'objet d'options d'un coup.
+  grist.setOption("widgetTitle", document.getElementById("cfgWidgetTitle").value.trim() || DEFAULT_TITLES.widgetTitle);
+  grist.setOption("categorieTitle", document.getElementById("cfgCategorieTitle").value.trim() || DEFAULT_TITLES.categorieTitle);
+  grist.setOption("montantTitle", document.getElementById("cfgMontantTitle").value.trim() || DEFAULT_TITLES.montantTitle);
+  grist.setOption("montant2Title", document.getElementById("cfgMontant2Title").value.trim() || DEFAULT_TITLES.montant2Title);
+  grist.setOption("avisTitle", document.getElementById("cfgAvisTitle").value.trim() || DEFAULT_TITLES.avisTitle);
+}
+document.getElementById("cfgOpenBtn").addEventListener("click", openConfigPanel);
+document.getElementById("cfgClose").addEventListener("click", closeConfigPanel);
+document.getElementById("cfgSave").addEventListener("click", saveConfig);
+
+function aggregate(rows) {
+  const pivot = {};
+  const catKey = OPTIONAL_COLUMNS.categorie.name, montantKey = OPTIONAL_COLUMNS.montant.name, montant2Key = OPTIONAL_COLUMNS.montant2.name;
+  rows.forEach(r => {
+    const cat = (r[catKey] === undefined || r[catKey] === null || r[catKey] === "") ? NO_CATEGORY_KEY : normAccent(r[catKey]);
+    const stat = r.Statut ? normAccent(r.Statut) : r.Statut;
+    if (!stat) return;
+    const montant = Number(r[montantKey]) || 0;
+    const montant2 = Number(r[montant2Key]) || 0;
+    pivot[cat] = pivot[cat] || {};
+    pivot[cat][stat] = pivot[cat][stat] || { nb: 0, montant: 0, montant2: 0 };
+    pivot[cat][stat].nb += 1;
+    pivot[cat][stat].montant += montant;
+    pivot[cat][stat].montant2 += montant2;
+  });
+  return pivot;
+}
+
+function aggregateAvis(rows) {
+  const counts = {};
+  const avisKey = OPTIONAL_COLUMNS.avis.name;
+  rows.forEach(r => {
+    if (r[avisKey] === undefined || r[avisKey] === null || r[avisKey] === "") return;
+    const val = normAccent(r[avisKey]);
+    counts[val] = (counts[val] || 0) + 1;
+  });
+  return counts;
+}
+
+function fmtEuro(n) { return n.toLocaleString("fr-FR") + " €"; }
+function fmtEuroCompact(n) {
+  return new Intl.NumberFormat("fr-FR", { notation: "compact", compactDisplay: "short", maximumFractionDigits: 1 }).format(n) + " €";
+}
+
+let charts = {};
+function clearCharts() { Object.keys(charts).forEach(id => { charts[id].destroy(); delete charts[id]; }); }
+
+function showMappingNeeded() {
+  document.getElementById("pageSub").textContent = `Associez au moins la colonne Statut dans le panneau de droite (⚙ Colonnes requises). ${OPTIONAL_COLUMNS.categorie.title}, ${OPTIONAL_COLUMNS.montant.title}, ${OPTIONAL_COLUMNS.montant2.title} et ${OPTIONAL_COLUMNS.avis.title} sont optionnels.`;
+  document.getElementById("tableZone").innerHTML = "";
+  document.getElementById("chartMontantBox").style.display = "none";
+  document.getElementById("chartAvisBox").style.display = "none";
+  clearCharts();
+}
+
+function showEmptyData() {
+  document.getElementById("pageSub").textContent = "Aucun dossier pour le moment.";
+  document.getElementById("tableZone").innerHTML = "";
+  document.getElementById("chartMontantBox").style.display = "none";
+  document.getElementById("chartAvisBox").style.display = "none";
+  clearCharts();
+}
+
+function showNotInGrist() {
+  document.getElementById("pageSub").textContent = "Ce widget doit être ouvert depuis un document Grist, avec l'accès « Lire les données sources sélectionnées » accordé dans le panneau de droite.";
+  document.getElementById("tableZone").innerHTML = "";
+  document.getElementById("chartMontantBox").style.display = "none";
+  document.getElementById("chartAvisBox").style.display = "none";
+  clearCharts();
+}
+
+function render(pivot, hasMontant, hasMontant2) {
+  lastPivot = pivot; lastHasMontant = hasMontant; lastHasMontant2 = hasMontant2;
+  const rawCats = Object.keys(pivot);
+  const singleCategoryMode = rawCats.length === 1 && rawCats[0] === NO_CATEGORY_KEY;
+  const cats = singleCategoryMode ? rawCats : [...new Set([...CONFIG.CATEGORIES_ORDER, ...rawCats])].filter(c => pivot[c]);
+
+  // Statuts entièrement dérivés des données réelles (corrige le bug des colonnes fantômes)
+  const stats = [...new Set(cats.flatMap(c => Object.keys(pivot[c])))]
+    .sort((a, b) => statutOrder(a) - statutOrder(b) || a.localeCompare(b));
+
+  console.log("Statuts détectés (ouvrez la console F12 en cas de couleur/ordre incorrect) :",
+    stats.map(s => ({ brut: s, cle_comparee: normStatut(s), trouve_dans_STATUT_STYLE: !!STATUT_STYLE[normStatut(s)] })));
+
+  const totNb = {}, totMontant = {}, totMontant2 = {};
+  stats.forEach(s => { totNb[s] = 0; totMontant[s] = 0; totMontant2[s] = 0; });
+  let grandNb = 0, grandMontant = 0, grandMontant2 = 0;
+  cats.forEach(c => stats.forEach(s => {
+    const v = pivot[c][s] || { nb: 0, montant: 0, montant2: 0 };
+    totNb[s] += v.nb; totMontant[s] += v.montant; totMontant2[s] += v.montant2;
+    grandNb += v.nb; grandMontant += v.montant; grandMontant2 += v.montant2;
+  }));
+
+  const subParts = [`${grandNb} dossiers au total`];
+  if (hasMontant) subParts.push(fmtEuro(grandMontant));
+  if (hasMontant2) subParts.push(fmtEuro(grandMontant2));
+  document.getElementById("pageSub").textContent = subParts.join(" — ");
+  document.getElementById("chartNbTitle").textContent = `Nombre de dossiers (${grandNb})`;
+
+  document.getElementById("chartMontantBox").style.display = (hasMontant || hasMontant2) ? "" : "none";
+  const montantTitleParts = [];
+  if (hasMontant) montantTitleParts.push(`${OPTIONAL_COLUMNS.montant.title} (${fmtEuro(grandMontant)})`);
+  if (hasMontant2) montantTitleParts.push(`${OPTIONAL_COLUMNS.montant2.title} (${fmtEuro(grandMontant2)})`);
+  document.getElementById("chartMontantTitle").textContent = montantTitleParts.join(" / ");
+
+  const colspan = 1 + (hasMontant ? 1 : 0) + (hasMontant2 ? 1 : 0);
+  let h = '<table class="pivot"><thead><tr>';
+  if (!singleCategoryMode) h += `<th rowspan="2">${OPTIONAL_COLUMNS.categorie.title}</th><th rowspan="2">Total</th>`;
+  stats.forEach(s => h += `<th colspan="${colspan}">${statutLabel(s)}</th>`);
+  h += '</tr><tr>';
+  stats.forEach(() => { h += '<th>nb</th>'; if (hasMontant) h += '<th>€</th>'; if (hasMontant2) h += '<th>€ 2</th>'; });
+  h += '</tr></thead><tbody>';
+  const rowCells = (v) => {
+    let cells = `<td>${v.nb || ""}</td>`;
+    if (hasMontant) cells += `<td>${v.montant ? fmtEuro(v.montant) : ""}</td>`;
+    if (hasMontant2) cells += `<td>${v.montant2 ? fmtEuro(v.montant2) : ""}</td>`;
+    return cells;
+  };
+  if (singleCategoryMode) {
+    h += '<tr class="tot">';
+    stats.forEach(s => { h += rowCells({ nb: totNb[s], montant: totMontant[s], montant2: totMontant2[s] }); });
+    h += '</tr>';
+  } else {
+    cats.forEach(c => {
+      const catNb = stats.reduce((a, s) => a + ((pivot[c][s] || {}).nb || 0), 0);
+      h += `<tr><td class="cat">${c}</td><td>${catNb}</td>`;
+      stats.forEach(s => { h += rowCells(pivot[c][s] || { nb: 0, montant: 0, montant2: 0 }); });
+      h += '</tr>';
+    });
+    h += `<tr class="tot"><td>TOTAUX</td><td>${grandNb}</td>`;
+    stats.forEach(s => { h += rowCells({ nb: totNb[s], montant: totMontant[s], montant2: totMontant2[s] }); });
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  document.getElementById("tableZone").innerHTML = h;
+
+  drawChart("chartNb", cats, stats, pivot, "nb", v => v, singleCategoryMode);
+  if (hasMontant || hasMontant2) {
+    const field1 = hasMontant ? "montant" : "montant2";
+    const field2 = (hasMontant && hasMontant2) ? "montant2" : null;
+    drawChart("chartMontant", cats, stats, pivot, field1, fmtEuroCompact, singleCategoryMode, field2);
+  } else if (charts["chartMontant"]) {
+    charts["chartMontant"].destroy();
+    delete charts["chartMontant"];
+  }
+}
+
+function renderAvis(hasAvis, counts) {
+  lastAvisCounts = hasAvis ? counts : null;
+  document.getElementById("chartAvisBox").style.display = hasAvis ? "" : "none";
+  if (hasAvis) {
+    drawDonut("chartAvis", counts);
+  } else if (charts["chartAvis"]) {
+    charts["chartAvis"].destroy();
+    delete charts["chartAvis"];
+  }
+}
+
+function drawChart(canvasId, cats, stats, pivot, field, fmtLabel, singleCategoryMode, field2) {
+  if (charts[canvasId]) charts[canvasId].destroy();
+  const ctx = document.getElementById(canvasId);
+
+  const labels = singleCategoryMode ? ["Dossiers"] : cats;
+  const datasets = [];
+  stats.forEach(s => {
+    datasets.push({
+      label: field2 ? `${statutLabel(s)} — ${OPTIONAL_COLUMNS.montant.title}` : statutLabel(s),
+      backgroundColor: statutColor(s),
+      data: cats.map(c => (pivot[c][s] || {})[field] || 0),
+      barPercentage: singleCategoryMode ? 0.6 : 0.85,
+      categoryPercentage: singleCategoryMode ? 0.7 : 0.6
+    });
+    if (field2) {
+      datasets.push({
+        label: `${statutLabel(s)} — ${OPTIONAL_COLUMNS.montant2.title}`,
+        backgroundColor: lightenColor(statutColor(s), 0.45),
+        data: cats.map(c => (pivot[c][s] || {})[field2] || 0),
+        barPercentage: singleCategoryMode ? 0.6 : 0.85,
+        categoryPercentage: singleCategoryMode ? 0.7 : 0.6
+      });
+    }
+  });
+  const allFields = field2 ? [field, field2] : [field];
+  const maxVal = Math.max(1, ...cats.flatMap(c => stats.flatMap(s => allFields.map(f => (pivot[c][s] || {})[f] || 0))));
+
+  charts[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      layout: { padding: { top: 26 } },
+      plugins: {
+        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
+        datalabels: {
+          anchor: "end", align: "end", offset: 2, clip: false,
+          color: "#161616", font: { size: 9 },
+          formatter: v => v ? fmtLabel(v) : ""
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, border: { display: true } },
+        y: { display: false, beginAtZero: true, suggestedMax: maxVal * 1.2 }
+      }
+    },
+    plugins: [ChartDataLabels]
+  });
+}
+
+function drawDonut(canvasId, counts) {
+  if (charts[canvasId]) charts[canvasId].destroy();
+  const ctx = document.getElementById(canvasId);
+  const labels = Object.keys(counts);
+  const values = labels.map(l => counts[l]);
+  charts[canvasId] = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data: values, backgroundColor: labels.map(avisColor) }] },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
+        datalabels: { color: "#fff", font: { size: 11, weight: "bold" }, formatter: v => v }
+      }
+    },
+    plugins: [ChartDataLabels]
+  });
+}
+
+// ==== Intégration Grist : mapping de colonnes via le panneau de droite ====
+let recordsEventFired = false;
+
+try {
+  grist.ready({
+    columns: [
+      { name: "Statut", title: "Statut", type: "Text,Choice" },
+      { name: OPTIONAL_COLUMNS.categorie.name, title: OPTIONAL_COLUMNS.categorie.title, type: OPTIONAL_COLUMNS.categorie.type, optional: true },
+      { name: OPTIONAL_COLUMNS.montant.name, title: OPTIONAL_COLUMNS.montant.title, type: OPTIONAL_COLUMNS.montant.type, optional: true },
+      { name: OPTIONAL_COLUMNS.montant2.name, title: OPTIONAL_COLUMNS.montant2.title, type: OPTIONAL_COLUMNS.montant2.type, optional: true },
+      { name: OPTIONAL_COLUMNS.avis.name, title: OPTIONAL_COLUMNS.avis.title, type: OPTIONAL_COLUMNS.avis.type, optional: true }
+    ],
+    requiredAccess: "read table",
+    hasCustomOptions: true,
+    onEditOptions: openConfigPanel
+  });
+
+  grist.onOptions((options) => {
+    TITLES = { ...DEFAULT_TITLES, ...(options || {}) };
+    applyTitles();
+  });
+
+  grist.onRecords((records, mappings) => {
+    recordsEventFired = true;
+    if (!mappings || !mappings.Statut) { showMappingNeeded(); return; } // fiable quelle que soit la version de Grist
+    const mapped = grist.mapColumnNames(records, mappings);
+    if (!mapped) { showMappingNeeded(); return; } // filet de sécurité pour l'ancien comportement (renvoyait null)
+    if (mapped.length === 0) { showEmptyData(); return; }
+    const hasMontant = !!(mappings && mappings[OPTIONAL_COLUMNS.montant.name]);
+    const hasMontant2 = !!(mappings && mappings[OPTIONAL_COLUMNS.montant2.name]);
+    const hasAvis = !!(mappings && mappings[OPTIONAL_COLUMNS.avis.name]);
+    render(aggregate(mapped), hasMontant, hasMontant2);
+    renderAvis(hasAvis, hasAvis ? aggregateAvis(mapped) : null);
+  });
+
+  setTimeout(() => { if (!recordsEventFired) showNotInGrist(); }, 1500);
+} catch (e) {
+  showNotInGrist();
+}
+</script>
+</body>
+</html>
