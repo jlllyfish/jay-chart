@@ -38,7 +38,7 @@
   .config-header { display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:1rem; margin-bottom:16px; }
   .config-close { background:none; border:none; font-size:1.3rem; cursor:pointer; color:#3A3A3A; line-height:1; }
   .cfg-label { display:block; font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:#000091; font-weight:700; margin:14px 0 6px; }
-  .cfg-input { width:100%; border:1px solid #CCC; border-radius:4px; padding:8px 10px; font-size:.9rem; font-family:inherit; box-sizing:border-box; }
+  .cfg-input { width:100%; border:1px solid #CCC; border-radius:4px; padding:8px 10px; font-size:.9rem; font-family:inherit; box-sizing:border-box; background:#fff; }
   .cfg-save { width:100%; margin-top:22px; background:#000091 !important; color:#fff !important; border:none; border-radius:4px; padding:10px; font-size:.9rem; font-weight:700; cursor:pointer; opacity:1 !important; }
   .cfg-save:hover { background:#1212FF !important; opacity:1 !important; }
 </style>
@@ -54,7 +54,7 @@
 <div id="tableZone"></div>
 <div class="charts">
   <div class="chartbox"><h2 id="chartNbTitle">Nombre de dossiers</h2><canvas id="chartNb"></canvas></div>
-  <div class="chartbox" id="chartMontantBox"><h2 id="chartMontantTitle">Montants (€)</h2><canvas id="chartMontant"></canvas></div>
+  <div class="chartbox" id="chartMontantBox"><h2 id="chartMontantTitle">Valeurs</h2><canvas id="chartMontant"></canvas></div>
   <div class="chartbox" id="chartAvisBox"><h2 id="chartAvisTitle">Autre catégorie</h2><canvas id="chartAvis"></canvas></div>
 </div>
 
@@ -65,10 +65,15 @@
     <input id="cfgWidgetTitle" class="cfg-input" type="text">
     <label class="cfg-label">Titre colonne « Catégorie »</label>
     <input id="cfgCategorieTitle" class="cfg-input" type="text">
-    <label class="cfg-label">Titre colonne « Montant »</label>
+    <label class="cfg-label">Titre colonne « Nombre »</label>
     <input id="cfgMontantTitle" class="cfg-input" type="text">
-    <label class="cfg-label">Titre colonne « Montant 2 »</label>
+    <label class="cfg-label">Titre colonne « Nombre 2 »</label>
     <input id="cfgMontant2Title" class="cfg-input" type="text">
+    <label class="cfg-label">Format des colonnes « Nombre »</label>
+    <select id="cfgValueFormat" class="cfg-input">
+      <option value="number">Nombre</option>
+      <option value="currency">Monétaire (€)</option>
+    </select>
     <label class="cfg-label">Titre colonne « Autre catégorie »</label>
     <input id="cfgAvisTitle" class="cfg-input" type="text">
     <button id="cfgSave" class="cfg-save" type="button">Enregistrer</button>
@@ -81,19 +86,18 @@ const CONFIG = { CATEGORIES_ORDER: ["SP", "EA", "PP", "MSC"] };
 const NO_CATEGORY_KEY = "__ALL__"; // utilisé quand la colonne Catégorie n'est pas mappée / vide
 
 // ==== Colonnes optionnelles : un seul endroit à modifier pour renommer/réutiliser ce widget ailleurs ====
-// "name" = clé technique (utilisée dans le code), "title" = libellé affiché partout (panneau Grist, tableau, graphique)
+// "name" = clé technique (NE PAS modifier : c'est la clé du mapping enregistré par Grist),
+// "title" = libellé affiché dans le volet de droite de Grist (et valeur par défaut des titres du widget)
 const OPTIONAL_COLUMNS = {
   categorie: { name: "Categorie", title: "Catégorie",  type: "Text,Choice" },
-  montant:   { name: "Montant",   title: "Montant",    type: "Numeric,Int" },
-  montant2:  { name: "Montant2",  title: "Montant 2",  type: "Numeric,Int" }, // ex. budget demandé (Montant) vs budget alloué (Montant2)
-  avis:      { name: "Avis",      title: "Autre catégorie", type: "Text,Choice" }        // donut : répartition d'une catégorie libre (ex. types d'avis rendus)
+  montant:   { name: "Montant",   title: "Nombre",     type: "Numeric,Int" },
+  montant2:  { name: "Montant2",  title: "Nombre 2",   type: "Numeric,Int" },
+  avis:      { name: "Avis",      title: "Autre catégorie", type: "Text,Choice" } // donut : répartition d'une catégorie libre
 };
 
 // ==== Couleur et ordre par statut (le libellé affiché, lui, est toujours votre texte brut tel quel) ====
-// La clé n'a pas besoin de correspondre exactement : majuscules/accents/espaces sont ignorés à la comparaison.
-// Un statut absent d'ici s'affiche quand même, avec une couleur de secours, donc rien ne casse si vous en oubliez un.
-function normAccent(s) { return String(s).normalize("NFC").trim(); } // pour l'affichage : garde la casse d'origine, corrige juste les accents "décomposés"
-function normStatut(s) { // pour la comparaison uniquement : insensible à la casse, aux accents, et espace ≈ underscore
+function normAccent(s) { return String(s).normalize("NFC").trim(); }
+function normStatut(s) {
   return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[_\s]+/g, " ").trim().toLowerCase();
 }
 const STATUT_STYLE_SRC = {
@@ -119,7 +123,7 @@ function statutOrder(raw) {
   const key = normStatut(raw);
   return STATUT_STYLE[key] ? STATUT_STYLE[key].order : 999;
 }
-function lightenColor(hex, amount) { // pour la 2e valeur numérique : même teinte, plus claire
+function lightenColor(hex, amount) {
   const n = parseInt(hex.replace("#", ""), 16);
   const r = Math.round(((n >> 16) & 255) + (255 - ((n >> 16) & 255)) * amount);
   const g = Math.round(((n >> 8) & 255) + (255 - ((n >> 8) & 255)) * amount);
@@ -127,7 +131,7 @@ function lightenColor(hex, amount) { // pour la 2e valeur numérique : même tei
   return `rgb(${r},${g},${b})`;
 }
 
-// Palette pour le donut "Avis" (couleurs assignées dans l'ordre de première rencontre) — palette Flattastic (Erigon)
+// Palette pour le donut "Avis" — palette Flattastic (Erigon)
 const AVIS_PALETTE = ["#DA4453", "#E9573F", "#FCBB42", "#8CC152", "#37BC9B", "#3BAFDA", "#4A89DC", "#967ADC"];
 const avisColorCache = {};
 function avisColor(raw) {
@@ -135,25 +139,35 @@ function avisColor(raw) {
   return avisColorCache[raw];
 }
 
-// ==== Titres personnalisables (bouton ⚙ du widget) ====
+// ==== Titres et format personnalisables (bouton ⚙ du widget) ====
 const DEFAULT_TITLES = {
   widgetTitle: "Suivi des dossiers",
   categorieTitle: OPTIONAL_COLUMNS.categorie.title,
   montantTitle: OPTIONAL_COLUMNS.montant.title,
   montant2Title: OPTIONAL_COLUMNS.montant2.title,
-  avisTitle: OPTIONAL_COLUMNS.avis.title
+  avisTitle: OPTIONAL_COLUMNS.avis.title,
+  valueFormat: "number" // "number" ou "currency"
 };
 let TITLES = { ...DEFAULT_TITLES };
+// Libellés d'affichage (séparés de OPTIONAL_COLUMNS pour ne pas toucher aux libellés du volet de droite)
+const DISPLAY = {
+  categorie: DEFAULT_TITLES.categorieTitle,
+  montant: DEFAULT_TITLES.montantTitle,
+  montant2: DEFAULT_TITLES.montant2Title,
+  avis: DEFAULT_TITLES.avisTitle
+};
 let lastPivot = null, lastHasMontant = false, lastHasMontant2 = false, lastAvisCounts = null;
+
+function isCurrency() { return TITLES.valueFormat === "currency"; }
 
 function applyTitles() {
   document.getElementById("pageTitle").textContent = TITLES.widgetTitle;
-  OPTIONAL_COLUMNS.categorie.title = TITLES.categorieTitle;
-  OPTIONAL_COLUMNS.montant.title = TITLES.montantTitle;
-  OPTIONAL_COLUMNS.montant2.title = TITLES.montant2Title;
-  OPTIONAL_COLUMNS.avis.title = TITLES.avisTitle;
+  DISPLAY.categorie = TITLES.categorieTitle;
+  DISPLAY.montant = TITLES.montantTitle;
+  DISPLAY.montant2 = TITLES.montant2Title;
+  DISPLAY.avis = TITLES.avisTitle;
   if (lastPivot) render(lastPivot, lastHasMontant, lastHasMontant2);
-  document.getElementById("chartAvisTitle").textContent = OPTIONAL_COLUMNS.avis.title;
+  document.getElementById("chartAvisTitle").textContent = DISPLAY.avis;
   if (lastAvisCounts) renderAvis(true, lastAvisCounts);
 }
 
@@ -162,18 +176,20 @@ function openConfigPanel() {
   document.getElementById("cfgCategorieTitle").value = TITLES.categorieTitle;
   document.getElementById("cfgMontantTitle").value = TITLES.montantTitle;
   document.getElementById("cfgMontant2Title").value = TITLES.montant2Title;
+  document.getElementById("cfgValueFormat").value = TITLES.valueFormat === "currency" ? "currency" : "number";
   document.getElementById("cfgAvisTitle").value = TITLES.avisTitle;
   document.getElementById("configOverlay").style.display = "flex";
 }
 function closeConfigPanel() { document.getElementById("configOverlay").style.display = "none"; }
 function saveConfig() {
-  // setOption (singulier) modifie une seule clé sans toucher aux autres options déjà stockées ;
-  // contrairement à setOptions (pluriel) qui remplace tout l'objet d'options d'un coup.
+  // setOption (singulier) modifie une seule clé sans toucher aux autres options déjà stockées
   grist.setOption("widgetTitle", document.getElementById("cfgWidgetTitle").value.trim() || DEFAULT_TITLES.widgetTitle);
   grist.setOption("categorieTitle", document.getElementById("cfgCategorieTitle").value.trim() || DEFAULT_TITLES.categorieTitle);
   grist.setOption("montantTitle", document.getElementById("cfgMontantTitle").value.trim() || DEFAULT_TITLES.montantTitle);
   grist.setOption("montant2Title", document.getElementById("cfgMontant2Title").value.trim() || DEFAULT_TITLES.montant2Title);
+  grist.setOption("valueFormat", document.getElementById("cfgValueFormat").value);
   grist.setOption("avisTitle", document.getElementById("cfgAvisTitle").value.trim() || DEFAULT_TITLES.avisTitle);
+  closeConfigPanel();
 }
 document.getElementById("cfgOpenBtn").addEventListener("click", openConfigPanel);
 document.getElementById("cfgClose").addEventListener("click", closeConfigPanel);
@@ -208,9 +224,12 @@ function aggregateAvis(rows) {
   return counts;
 }
 
-function fmtEuro(n) { return n.toLocaleString("fr-FR") + " €"; }
-function fmtEuroCompact(n) {
-  return new Intl.NumberFormat("fr-FR", { notation: "compact", compactDisplay: "short", maximumFractionDigits: 1 }).format(n) + " €";
+// ==== Formatage selon le format choisi (nombre / monétaire) ====
+function fmtValue(n) {
+  return n.toLocaleString("fr-FR", { maximumFractionDigits: 2 }) + (isCurrency() ? " €" : "");
+}
+function fmtValueCompact(n) {
+  return new Intl.NumberFormat("fr-FR", { notation: "compact", compactDisplay: "short", maximumFractionDigits: 1 }).format(n) + (isCurrency() ? " €" : "");
 }
 
 let charts = {};
@@ -246,12 +265,8 @@ function render(pivot, hasMontant, hasMontant2) {
   const singleCategoryMode = rawCats.length === 1 && rawCats[0] === NO_CATEGORY_KEY;
   const cats = singleCategoryMode ? rawCats : [...new Set([...CONFIG.CATEGORIES_ORDER, ...rawCats])].filter(c => pivot[c]);
 
-  // Statuts entièrement dérivés des données réelles (corrige le bug des colonnes fantômes)
   const stats = [...new Set(cats.flatMap(c => Object.keys(pivot[c])))]
     .sort((a, b) => statutOrder(a) - statutOrder(b) || a.localeCompare(b));
-
-  console.log("Statuts détectés (ouvrez la console F12 en cas de couleur/ordre incorrect) :",
-    stats.map(s => ({ brut: s, cle_comparee: normStatut(s), trouve_dans_STATUT_STYLE: !!STATUT_STYLE[normStatut(s)] })));
 
   const totNb = {}, totMontant = {}, totMontant2 = {};
   stats.forEach(s => { totNb[s] = 0; totMontant[s] = 0; totMontant2[s] = 0; });
@@ -263,28 +278,32 @@ function render(pivot, hasMontant, hasMontant2) {
   }));
 
   const subParts = [`${grandNb} dossiers au total`];
-  if (hasMontant) subParts.push(fmtEuro(grandMontant));
-  if (hasMontant2) subParts.push(fmtEuro(grandMontant2));
+  if (hasMontant) subParts.push(`${DISPLAY.montant} : ${fmtValue(grandMontant)}`);
+  if (hasMontant2) subParts.push(`${DISPLAY.montant2} : ${fmtValue(grandMontant2)}`);
   document.getElementById("pageSub").textContent = subParts.join(" — ");
   document.getElementById("chartNbTitle").textContent = `Nombre de dossiers (${grandNb})`;
 
   document.getElementById("chartMontantBox").style.display = (hasMontant || hasMontant2) ? "" : "none";
   const montantTitleParts = [];
-  if (hasMontant) montantTitleParts.push(`${OPTIONAL_COLUMNS.montant.title} (${fmtEuro(grandMontant)})`);
-  if (hasMontant2) montantTitleParts.push(`${OPTIONAL_COLUMNS.montant2.title} (${fmtEuro(grandMontant2)})`);
+  if (hasMontant) montantTitleParts.push(`${DISPLAY.montant} (${fmtValue(grandMontant)})`);
+  if (hasMontant2) montantTitleParts.push(`${DISPLAY.montant2} (${fmtValue(grandMontant2)})`);
   document.getElementById("chartMontantTitle").textContent = montantTitleParts.join(" / ");
+
+  // Sous-en-têtes : "€" / "€ 2" en mode monétaire, sinon les titres des colonnes
+  const subHead1 = isCurrency() ? "€" : DISPLAY.montant;
+  const subHead2 = isCurrency() ? "€ 2" : DISPLAY.montant2;
 
   const colspan = 1 + (hasMontant ? 1 : 0) + (hasMontant2 ? 1 : 0);
   let h = '<table class="pivot"><thead><tr>';
-  if (!singleCategoryMode) h += `<th rowspan="2">${OPTIONAL_COLUMNS.categorie.title}</th><th rowspan="2">Total</th>`;
+  if (!singleCategoryMode) h += `<th rowspan="2">${DISPLAY.categorie}</th><th rowspan="2">Total</th>`;
   stats.forEach(s => h += `<th colspan="${colspan}">${statutLabel(s)}</th>`);
   h += '</tr><tr>';
-  stats.forEach(() => { h += '<th>nb</th>'; if (hasMontant) h += '<th>€</th>'; if (hasMontant2) h += '<th>€ 2</th>'; });
+  stats.forEach(() => { h += '<th>nb</th>'; if (hasMontant) h += `<th>${subHead1}</th>`; if (hasMontant2) h += `<th>${subHead2}</th>`; });
   h += '</tr></thead><tbody>';
   const rowCells = (v) => {
     let cells = `<td>${v.nb || ""}</td>`;
-    if (hasMontant) cells += `<td>${v.montant ? fmtEuro(v.montant) : ""}</td>`;
-    if (hasMontant2) cells += `<td>${v.montant2 ? fmtEuro(v.montant2) : ""}</td>`;
+    if (hasMontant) cells += `<td>${v.montant ? fmtValue(v.montant) : ""}</td>`;
+    if (hasMontant2) cells += `<td>${v.montant2 ? fmtValue(v.montant2) : ""}</td>`;
     return cells;
   };
   if (singleCategoryMode) {
@@ -309,7 +328,7 @@ function render(pivot, hasMontant, hasMontant2) {
   if (hasMontant || hasMontant2) {
     const field1 = hasMontant ? "montant" : "montant2";
     const field2 = (hasMontant && hasMontant2) ? "montant2" : null;
-    drawChart("chartMontant", cats, stats, pivot, field1, fmtEuroCompact, singleCategoryMode, field2);
+    drawChart("chartMontant", cats, stats, pivot, field1, fmtValueCompact, singleCategoryMode, field2);
   } else if (charts["chartMontant"]) {
     charts["chartMontant"].destroy();
     delete charts["chartMontant"];
@@ -335,7 +354,7 @@ function drawChart(canvasId, cats, stats, pivot, field, fmtLabel, singleCategory
   const datasets = [];
   stats.forEach(s => {
     datasets.push({
-      label: field2 ? `${statutLabel(s)} — ${OPTIONAL_COLUMNS.montant.title}` : statutLabel(s),
+      label: field2 ? `${statutLabel(s)} — ${DISPLAY.montant}` : statutLabel(s),
       backgroundColor: statutColor(s),
       data: cats.map(c => (pivot[c][s] || {})[field] || 0),
       barPercentage: singleCategoryMode ? 0.6 : 0.85,
@@ -343,7 +362,7 @@ function drawChart(canvasId, cats, stats, pivot, field, fmtLabel, singleCategory
     });
     if (field2) {
       datasets.push({
-        label: `${statutLabel(s)} — ${OPTIONAL_COLUMNS.montant2.title}`,
+        label: `${statutLabel(s)} — ${DISPLAY.montant2}`,
         backgroundColor: lightenColor(statutColor(s), 0.45),
         data: cats.map(c => (pivot[c][s] || {})[field2] || 0),
         barPercentage: singleCategoryMode ? 0.6 : 0.85,
@@ -420,9 +439,9 @@ try {
 
   grist.onRecords((records, mappings) => {
     recordsEventFired = true;
-    if (!mappings || !mappings.Statut) { showMappingNeeded(); return; } // fiable quelle que soit la version de Grist
+    if (!mappings || !mappings.Statut) { showMappingNeeded(); return; }
     const mapped = grist.mapColumnNames(records, mappings);
-    if (!mapped) { showMappingNeeded(); return; } // filet de sécurité pour l'ancien comportement (renvoyait null)
+    if (!mapped) { showMappingNeeded(); return; }
     if (mapped.length === 0) { showEmptyData(); return; }
     const hasMontant = !!(mappings && mappings[OPTIONAL_COLUMNS.montant.name]);
     const hasMontant2 = !!(mappings && mappings[OPTIONAL_COLUMNS.montant2.name]);
