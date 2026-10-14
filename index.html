@@ -45,6 +45,14 @@
   .cfg-reset { background:none !important; border:none; color:#000091; font-size:.8rem; text-decoration:underline; cursor:pointer; padding:0; margin-top:10px; opacity:1 !important; }
   .cfg-save { width:100%; margin-top:22px; background:#000091 !important; color:#fff !important; border:none; border-radius:4px; padding:10px; font-size:.9rem; font-weight:700; cursor:pointer; opacity:1 !important; }
   .cfg-save:hover { background:#1212FF !important; opacity:1 !important; }
+
+  .filters { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px 16px; margin:0 0 20px; }
+  .filters[hidden] { display:none; }
+  .filter-item { display:flex; flex-direction:column; min-width:180px; }
+  .filter-item label { font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; color:#000091; font-weight:700; margin-bottom:4px; }
+  .filter-item select { border:1px solid #CCC; border-radius:4px; padding:6px 8px; font-size:.85rem; font-family:inherit; background:#fff; cursor:pointer; }
+  .filter-item select.active { border-color:#000091; box-shadow:inset 0 0 0 1px #000091; }
+  .filter-reset { background:none !important; border:none; color:#000091; font-size:.8rem; text-decoration:underline; cursor:pointer; padding:0 0 8px; opacity:1 !important; }
 </style>
 </head>
 <body>
@@ -54,6 +62,18 @@
   <button id="cfgOpenBtn" class="cfg-btn" type="button" title="Configuration">⚙</button>
 </div>
 <p class="sub" id="pageSub">Chargement…</p>
+
+<div class="filters" id="filtersBar" hidden>
+  <div class="filter-item">
+    <label for="filterStatut">Statut</label>
+    <select id="filterStatut"></select>
+  </div>
+  <div class="filter-item" id="filterCategorieItem">
+    <label for="filterCategorie" id="filterCategorieLabel">Catégorie</label>
+    <select id="filterCategorie"></select>
+  </div>
+  <button id="filterReset" class="filter-reset" type="button" hidden>Réinitialiser les filtres</button>
+</div>
 
 <div id="tableZone" style="overflow-x:auto; margin-bottom:32px"></div>
 <div class="charts">
@@ -190,6 +210,7 @@ function applyTitles() {
   OPTIONAL_COLUMNS.avis.title = TITLES.avisTitle;
   if (lastPivot) render(lastPivot, lastHasMontant, lastHasMontant2);
   document.getElementById("chartAvisTitle").textContent = OPTIONAL_COLUMNS.avis.title;
+  document.getElementById("filterCategorieLabel").textContent = OPTIONAL_COLUMNS.categorie.title;
   if (lastAvisCounts) renderAvis(true, lastAvisCounts);
 }
 
@@ -261,6 +282,88 @@ document.getElementById("cfgOpenBtn").addEventListener("click", openConfigPanel)
 document.getElementById("cfgClose").addEventListener("click", closeConfigPanel);
 document.getElementById("cfgSave").addEventListener("click", saveConfig);
 
+// ==== Filtres déroulants (Statut / Catégorie) ====
+// État propre à chaque utilisateur, non enregistré dans le document Grist.
+const FILTER_ALL = "__ALL_VALUES__";
+const NO_CATEGORY_LABEL = "(Sans catégorie)";
+let filterState = { statut: FILTER_ALL, categorie: FILTER_ALL };
+let lastMapped = null, lastMappings = null;
+
+function rowStatut(r) { return r.Statut ? normAccent(r.Statut) : ""; }
+function rowCategorie(r) {
+  const v = r[OPTIONAL_COLUMNS.categorie.name];
+  return (v === undefined || v === null || v === "") ? NO_CATEGORY_KEY : normAccent(v);
+}
+function escHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+
+function fillSelect(sel, values, current, labelFn) {
+  // si la valeur choisie n'existe plus dans les données, on revient à « Tous »
+  const value = values.includes(current) ? current : FILTER_ALL;
+  sel.innerHTML = `<option value="${FILTER_ALL}">Tous</option>` +
+    values.map(v => `<option value="${escHtml(v)}">${escHtml(labelFn(v))}</option>`).join("");
+  sel.value = value;
+  sel.classList.toggle("active", value !== FILTER_ALL);
+  return value;
+}
+
+function buildFilters(rows, hasCategorie) {
+  // options calculées sur toutes les données (non filtrées) pour ne jamais « perdre » une valeur
+  const statuts = [...new Set(rows.map(rowStatut).filter(Boolean))]
+    .sort((a, b) => statutOrder(a) - statutOrder(b) || a.localeCompare(b));
+  filterState.statut = fillSelect(document.getElementById("filterStatut"), statuts, filterState.statut, statutLabel);
+
+  document.getElementById("filterCategorieItem").hidden = !hasCategorie;
+  document.getElementById("filterCategorieLabel").textContent = OPTIONAL_COLUMNS.categorie.title;
+  if (hasCategorie) {
+    const rawCats = [...new Set(rows.map(rowCategorie))];
+    const cats = [...new Set([...CONFIG.CATEGORIES_ORDER, ...rawCats])].filter(c => rawCats.includes(c));
+    filterState.categorie = fillSelect(document.getElementById("filterCategorie"), cats, filterState.categorie,
+      c => c === NO_CATEGORY_KEY ? NO_CATEGORY_LABEL : c);
+  } else {
+    filterState.categorie = FILTER_ALL;
+  }
+
+  document.getElementById("filtersBar").hidden = false;
+  document.getElementById("filterReset").hidden = filterState.statut === FILTER_ALL && filterState.categorie === FILTER_ALL;
+}
+
+function applyFilters(rows) {
+  return rows.filter(r =>
+    (filterState.statut === FILTER_ALL || rowStatut(r) === filterState.statut) &&
+    (filterState.categorie === FILTER_ALL || rowCategorie(r) === filterState.categorie));
+}
+
+function showNoMatch() {
+  document.getElementById("pageSub").textContent = "Aucun dossier ne correspond aux filtres sélectionnés.";
+  document.getElementById("tableZone").innerHTML = "";
+  ["chartNbBox", "chartMontantBox", "chartAvisBox"].forEach(id => document.getElementById(id).style.display = "none");
+  lastPivot = null; lastAvisCounts = null;
+  clearCharts();
+}
+
+function hideFilters() { document.getElementById("filtersBar").hidden = true; }
+
+function refresh() {
+  if (!lastMapped) return;
+  const m = lastMappings;
+  const hasCategorie = !!m[OPTIONAL_COLUMNS.categorie.name];
+  const hasMontant = !!m[OPTIONAL_COLUMNS.montant.name];
+  const hasMontant2 = !!m[OPTIONAL_COLUMNS.montant2.name];
+  const hasAvis = !!m[OPTIONAL_COLUMNS.avis.name];
+  buildFilters(lastMapped, hasCategorie);
+  const rows = applyFilters(lastMapped);
+  if (rows.length === 0) { showNoMatch(); return; }
+  render(aggregate(rows), hasMontant, hasMontant2);
+  renderAvis(hasAvis, hasAvis ? aggregateAvis(rows) : null);
+}
+
+document.getElementById("filterStatut").addEventListener("change", e => { filterState.statut = e.target.value; refresh(); });
+document.getElementById("filterCategorie").addEventListener("change", e => { filterState.categorie = e.target.value; refresh(); });
+document.getElementById("filterReset").addEventListener("click", () => {
+  filterState = { statut: FILTER_ALL, categorie: FILTER_ALL };
+  refresh();
+});
+
 function aggregate(rows) {
   const pivot = {};
   const catKey = OPTIONAL_COLUMNS.categorie.name, montantKey = OPTIONAL_COLUMNS.montant.name, montant2Key = OPTIONAL_COLUMNS.montant2.name;
@@ -301,6 +404,7 @@ let charts = {};
 function clearCharts() { Object.keys(charts).forEach(id => { charts[id].destroy(); delete charts[id]; }); }
 
 function showMappingNeeded() {
+  hideFilters(); lastMapped = null;
   document.getElementById("pageSub").textContent = `Associez au moins la colonne Statut dans le panneau de droite (⚙ Colonnes requises). ${OPTIONAL_COLUMNS.categorie.title}, ${OPTIONAL_COLUMNS.montant.title}, ${OPTIONAL_COLUMNS.montant2.title} et ${OPTIONAL_COLUMNS.avis.title} sont optionnels.`;
   document.getElementById("tableZone").innerHTML = "";
   document.getElementById("chartMontantBox").style.display = "none";
@@ -309,6 +413,7 @@ function showMappingNeeded() {
 }
 
 function showEmptyData() {
+  hideFilters(); lastMapped = null;
   document.getElementById("pageSub").textContent = "Aucun dossier pour le moment.";
   document.getElementById("tableZone").innerHTML = "";
   document.getElementById("chartMontantBox").style.display = "none";
@@ -317,6 +422,7 @@ function showEmptyData() {
 }
 
 function showNotInGrist() {
+  hideFilters(); lastMapped = null;
   document.getElementById("pageSub").textContent = "Ce widget doit être ouvert depuis un document Grist, avec l'accès « Lire les données sources sélectionnées » accordé dans le panneau de droite.";
   document.getElementById("tableZone").innerHTML = "";
   document.getElementById("chartMontantBox").style.display = "none";
@@ -536,11 +642,8 @@ try {
     const mapped = grist.mapColumnNames(records, mappings);
     if (!mapped) { showMappingNeeded(); return; } // filet de sécurité pour l'ancien comportement (renvoyait null)
     if (mapped.length === 0) { showEmptyData(); return; }
-    const hasMontant = !!(mappings && mappings[OPTIONAL_COLUMNS.montant.name]);
-    const hasMontant2 = !!(mappings && mappings[OPTIONAL_COLUMNS.montant2.name]);
-    const hasAvis = !!(mappings && mappings[OPTIONAL_COLUMNS.avis.name]);
-    render(aggregate(mapped), hasMontant, hasMontant2);
-    renderAvis(hasAvis, hasAvis ? aggregateAvis(mapped) : null);
+    lastMapped = mapped; lastMappings = mappings;
+    refresh();
   });
 
   setTimeout(() => { if (!recordsEventFired) showNotInGrist(); }, 1500);
